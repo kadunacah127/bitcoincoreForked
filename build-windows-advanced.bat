@@ -2,11 +2,11 @@
 setlocal EnableDelayedExpansion
 
 :: ============================================================================
-:: Bitcoin Core Windows Build Script - ADVANCED VERSION v2.0
+:: Bitcoin Core Windows Build Script - ADVANCED VERSION v2.1
 :: With automatic error recovery, retry logic, and network fixes
 :: ============================================================================
 
-title Bitcoin Core Windows Builder (Advanced v2.0)
+title Bitcoin Core Windows Builder (Advanced v2.1)
 color 0B
 
 :: Default Configuration
@@ -38,7 +38,7 @@ goto :Menu
 cls
 echo.
 echo ============================================================================
-echo           BITCOIN CORE WINDOWS BUILD SCRIPT (ADVANCED v2.0)
+echo           BITCOIN CORE WINDOWS BUILD SCRIPT (ADVANCED v2.1)
 echo ============================================================================
 echo.
 echo   Build Configuration:
@@ -57,7 +57,7 @@ echo   --------
 echo   [C] Check Requirements Only
 echo   [B] START BUILD
 echo   [I] Install After Build
-echo   [R] REPAIR / Fix Issues (clear cache, fix VS, fix network)
+echo   [R] REPAIR / Fix Issues (clear cache, remove ALL VS, fix network)
 echo   [Q] Quit
 echo.
 echo ============================================================================
@@ -154,107 +154,303 @@ exit /b 0
 cls
 echo.
 echo ============================================================================
-echo                         REPAIR / FIX ISSUES
+echo                     REPAIR / FIX ALL ISSUES (v2.1)
 echo ============================================================================
 echo.
 echo This will:
 echo   1. Clear vcpkg download cache (fixes SSL/download errors)
 echo   2. Clear build trees (fixes path too long errors)
 echo   3. Update vcpkg to latest version
-echo   4. Fix Visual Studio detection
-echo   5. Reset network settings for downloads
-echo   6. Clean previous build
+echo   4. REMOVE ALL Visual Studio installations (including incomplete ones)
+echo   5. Install fresh Visual Studio Build Tools 2022
+echo   6. Reset network settings for downloads
+echo   7. Clean previous build
+echo.
+echo [WARNING] This will UNINSTALL all Visual Studio versions!
+echo [WARNING] This process may take 15-30 minutes.
 echo.
 set /p "CONFIRM=Continue? (Y/N): "
 if /i not "%CONFIRM%"=="Y" goto :Menu
 
 echo.
-echo [REPAIR] Clearing vcpkg download cache...
+echo ============================================================================
+echo                    STARTING REPAIR PROCESS
+echo ============================================================================
+echo.
+
+:: Step 1: Clear vcpkg caches
+echo [REPAIR 1/7] Clearing vcpkg download cache...
 if exist "%VCPKG_DIR%\downloads" (
     rmdir /s /q "%VCPKG_DIR%\downloads" 2>nul
-    echo [OK] Downloads cache cleared
+    echo          [OK] Downloads cache cleared
+) else (
+    echo          [OK] No downloads cache found
 )
 
-echo [REPAIR] Clearing build trees...
+:: Step 2: Clear build trees
+echo [REPAIR 2/7] Clearing build trees...
 if exist "%VCPKG_BUILDTREES%" (
     rmdir /s /q "%VCPKG_BUILDTREES%" 2>nul
-    echo [OK] Build trees cleared
+    echo          [OK] Build trees cleared
+) else (
+    echo          [OK] No build trees found
 )
 
-echo [REPAIR] Clearing previous build...
 if exist "%BUILD_DIR%" (
     rmdir /s /q "%BUILD_DIR%" 2>nul
-    echo [OK] Build directory cleared
+    echo          [OK] Build directory cleared
 )
 
-echo [REPAIR] Clearing vcpkg installed packages...
 if exist "%VCPKG_DIR%\installed" (
     rmdir /s /q "%VCPKG_DIR%\installed" 2>nul
-    echo [OK] Installed packages cleared
+    echo          [OK] Installed packages cleared
 )
 
-echo [REPAIR] Updating vcpkg...
+if exist "%VCPKG_DIR%\buildtrees" (
+    rmdir /s /q "%VCPKG_DIR%\buildtrees" 2>nul
+    echo          [OK] vcpkg buildtrees cleared
+)
+
+if exist "%VCPKG_DIR%\packages" (
+    rmdir /s /q "%VCPKG_DIR%\packages" 2>nul
+    echo          [OK] vcpkg packages cleared
+)
+
+:: Step 3: Update vcpkg
+echo [REPAIR 3/7] Updating vcpkg...
 if exist "%VCPKG_DIR%" (
     cd /d "%VCPKG_DIR%"
     git fetch origin 2>nul
     git reset --hard origin/master 2>nul
     call bootstrap-vcpkg.bat -disableMetrics >nul 2>&1
-    echo [OK] vcpkg updated
+    echo          [OK] vcpkg updated
     cd /d "%REPO_DIR%"
+) else (
+    echo          [INFO] vcpkg not installed, will install later
 )
 
-echo [REPAIR] Fixing network settings...
-:: Reset Windows network settings that might interfere
+:: Step 4: Remove ALL Visual Studio installations
+echo [REPAIR 4/7] Removing ALL Visual Studio installations...
+echo          [INFO] This may take several minutes...
+echo.
+
+call :DoRemoveAllVisualStudio
+
+:: Step 5: Install fresh Visual Studio Build Tools
+echo.
+echo [REPAIR 5/7] Installing fresh Visual Studio Build Tools 2022...
+echo          [INFO] This may take 10-20 minutes...
+echo.
+
+call :DoInstallVSFresh
+
+:: Step 6: Fix network settings
+echo.
+echo [REPAIR 6/7] Fixing network settings...
 netsh winsock reset >nul 2>&1
 netsh int ip reset >nul 2>&1
 ipconfig /flushdns >nul 2>&1
-echo [OK] Network settings reset
+echo          [OK] Network settings reset
 
-echo [REPAIR] Setting secure download options...
-:: Force git to use Windows certificate store
+:: Configure git for better compatibility
 git config --global http.sslBackend schannel 2>nul
-echo [OK] Git SSL backend set to schannel
+git config --global http.postBuffer 524288000 2>nul
+echo          [OK] Git SSL backend set to schannel
 
-echo [REPAIR] Checking Visual Studio installation...
-call :DoRepairVS
+:: Step 7: Verify installation
+echo.
+echo [REPAIR 7/7] Verifying installation...
+call :DoCheckVisualStudio
+if !errorlevel! equ 0 (
+    echo          [OK] Visual Studio verified
+) else (
+    echo          [WARNING] Visual Studio may need manual installation
+)
 
 echo.
 echo ============================================================================
 echo                         REPAIR COMPLETE
 echo ============================================================================
 echo.
-echo Please RESTART YOUR COMPUTER before building again.
-echo After restart, run this script again and press [B] to build.
+echo IMPORTANT: Please RESTART YOUR COMPUTER before building!
+echo.
+echo After restart:
+echo   1. Run this script again as Administrator
+echo   2. Press [B] to start the build
+echo.
+echo ============================================================================
 echo.
 pause
 goto :Menu
 
-:DoRepairVS
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-set "VS_FOUND=0"
+:: ============================================================================
+:: REMOVE ALL VISUAL STUDIO INSTALLATIONS
+:: ============================================================================
 
-if exist "!VSWHERE!" (
-    for /f "tokens=*" %%i in ('"!VSWHERE!" -latest -property installationPath 2^>nul') do (
-        if exist "%%i\VC\Auxiliary\Build\vcvars64.bat" (
-            set "VS_FOUND=1"
-            echo [OK] Visual Studio found at: %%i
-        )
-    )
+:DoRemoveAllVisualStudio
+echo          Searching for Visual Studio installations...
+echo.
+
+:: Use winget to remove all VS versions
+where winget >nul 2>&1
+if !errorlevel! equ 0 (
+    echo          [INFO] Using winget to uninstall Visual Studio products...
+    
+    :: Visual Studio 2022 versions
+    echo          Removing Visual Studio 2022 Community...
+    winget uninstall --id Microsoft.VisualStudio.2022.Community --silent >nul 2>&1
+    
+    echo          Removing Visual Studio 2022 Professional...
+    winget uninstall --id Microsoft.VisualStudio.2022.Professional --silent >nul 2>&1
+    
+    echo          Removing Visual Studio 2022 Enterprise...
+    winget uninstall --id Microsoft.VisualStudio.2022.Enterprise --silent >nul 2>&1
+    
+    echo          Removing Visual Studio 2022 BuildTools...
+    winget uninstall --id Microsoft.VisualStudio.2022.BuildTools --silent >nul 2>&1
+    
+    :: Visual Studio 2019 versions
+    echo          Removing Visual Studio 2019 Community...
+    winget uninstall --id Microsoft.VisualStudio.2019.Community --silent >nul 2>&1
+    
+    echo          Removing Visual Studio 2019 Professional...
+    winget uninstall --id Microsoft.VisualStudio.2019.Professional --silent >nul 2>&1
+    
+    echo          Removing Visual Studio 2019 Enterprise...
+    winget uninstall --id Microsoft.VisualStudio.2019.Enterprise --silent >nul 2>&1
+    
+    echo          Removing Visual Studio 2019 BuildTools...
+    winget uninstall --id Microsoft.VisualStudio.2019.BuildTools --silent >nul 2>&1
+    
+    :: Visual Studio 2017 versions
+    echo          Removing Visual Studio 2017 versions...
+    winget uninstall --id Microsoft.VisualStudio.2017.Community --silent >nul 2>&1
+    winget uninstall --id Microsoft.VisualStudio.2017.Professional --silent >nul 2>&1
+    winget uninstall --id Microsoft.VisualStudio.2017.Enterprise --silent >nul 2>&1
+    winget uninstall --id Microsoft.VisualStudio.2017.BuildTools --silent >nul 2>&1
 )
 
-if "!VS_FOUND!"=="0" (
-    echo [REPAIR] Visual Studio not found. Installing Build Tools...
-    echo [INFO] This may take 10-20 minutes...
+:: Use VS Installer to remove everything (catches incomplete installations)
+echo          [INFO] Using VS Installer to clean up...
+set "VS_INSTALLER=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vs_installer.exe"
+
+if exist "!VS_INSTALLER!" (
+    echo          Running VS Installer cleanup...
     
-    where winget >nul 2>&1
-    if !errorlevel! equ 0 (
-        winget uninstall Microsoft.VisualStudio.2022.BuildTools >nul 2>&1
-        winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended" --accept-package-agreements --accept-source-agreements
-    ) else (
-        powershell -Command "Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile '%TEMP%\vs_buildtools.exe'"
-        "%TEMP%\vs_buildtools.exe" --quiet --wait --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended
+    :: Get all installed instances and uninstall them
+    set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    
+    if exist "!VSWHERE!" (
+        :: Uninstall each found instance
+        for /f "tokens=*" %%i in ('"!VSWHERE!" -all -property installationPath 2^>nul') do (
+            echo          Uninstalling: %%i
+            "!VS_INSTALLER!" uninstall --installPath "%%i" --quiet --wait >nul 2>&1
+        )
     )
-    echo [OK] Visual Studio Build Tools installed
+    
+    :: Final cleanup with installer
+    "!VS_INSTALLER!" --quiet --wait --norestart uninstall --all >nul 2>&1
+)
+
+:: Remove VS Installer itself
+echo          Removing Visual Studio Installer...
+if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vs_installer.exe" (
+    "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vs_installer.exe" --quiet --wait --norestart uninstall --all >nul 2>&1
+)
+
+:: Force remove leftover directories
+echo          Cleaning leftover directories...
+
+:: VS 2022 directories
+if exist "%ProgramFiles%\Microsoft Visual Studio\2022" (
+    rmdir /s /q "%ProgramFiles%\Microsoft Visual Studio\2022" 2>nul
+)
+if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022" (
+    rmdir /s /q "%ProgramFiles(x86)%\Microsoft Visual Studio\2022" 2>nul
+)
+
+:: VS 2019 directories
+if exist "%ProgramFiles%\Microsoft Visual Studio\2019" (
+    rmdir /s /q "%ProgramFiles%\Microsoft Visual Studio\2019" 2>nul
+)
+if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2019" (
+    rmdir /s /q "%ProgramFiles(x86)%\Microsoft Visual Studio\2019" 2>nul
+)
+
+:: VS 2017 directories
+if exist "%ProgramFiles%\Microsoft Visual Studio\2017" (
+    rmdir /s /q "%ProgramFiles%\Microsoft Visual Studio\2017" 2>nul
+)
+if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2017" (
+    rmdir /s /q "%ProgramFiles(x86)%\Microsoft Visual Studio\2017" 2>nul
+)
+
+:: VS Installer directory
+if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer" (
+    rmdir /s /q "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer" 2>nul
+)
+
+:: VS cache directories
+if exist "%ProgramData%\Microsoft\VisualStudio" (
+    rmdir /s /q "%ProgramData%\Microsoft\VisualStudio" 2>nul
+)
+if exist "%LOCALAPPDATA%\Microsoft\VisualStudio" (
+    rmdir /s /q "%LOCALAPPDATA%\Microsoft\VisualStudio" 2>nul
+)
+if exist "%APPDATA%\Microsoft\VisualStudio" (
+    rmdir /s /q "%APPDATA%\Microsoft\VisualStudio" 2>nul
+)
+
+:: VS packages cache
+if exist "%ProgramData%\Package Cache" (
+    echo          Cleaning Package Cache (VS components)...
+    for /d %%d in ("%ProgramData%\Package Cache\*VisualStudio*") do rmdir /s /q "%%d" 2>nul
+    for /d %%d in ("%ProgramData%\Package Cache\*vs_*") do rmdir /s /q "%%d" 2>nul
+)
+
+echo          [OK] All Visual Studio installations removed
+exit /b 0
+
+:: ============================================================================
+:: INSTALL FRESH VISUAL STUDIO BUILD TOOLS
+:: ============================================================================
+
+:DoInstallVSFresh
+where winget >nul 2>&1
+if !errorlevel! equ 0 (
+    echo          Installing via winget...
+    winget install --id Microsoft.VisualStudio.2022.BuildTools ^
+        --override "--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --add Microsoft.VisualStudio.Component.VC.CMake.Project --includeRecommended" ^
+        --accept-package-agreements --accept-source-agreements
+    
+    if !errorlevel! neq 0 (
+        echo          [WARNING] winget install may have issues, trying direct download...
+        goto :InstallVSDirect
+    )
+) else (
+    goto :InstallVSDirect
+)
+
+echo          [OK] Visual Studio Build Tools 2022 installed
+exit /b 0
+
+:InstallVSDirect
+echo          Downloading VS Build Tools installer directly...
+powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile '%TEMP%\vs_buildtools.exe'"
+
+if exist "%TEMP%\vs_buildtools.exe" (
+    echo          Running installer (this may take 10-20 minutes)...
+    "%TEMP%\vs_buildtools.exe" --quiet --wait --norestart ^
+        --add Microsoft.VisualStudio.Workload.VCTools ^
+        --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
+        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 ^
+        --add Microsoft.VisualStudio.Component.VC.CMake.Project ^
+        --includeRecommended
+    
+    echo          [OK] Visual Studio Build Tools 2022 installed
+) else (
+    echo          [ERROR] Failed to download VS Build Tools installer
+    exit /b 1
 )
 exit /b 0
 
@@ -383,7 +579,7 @@ if !errorlevel! neq 0 (
 call :DoCheckVisualStudio
 if !errorlevel! neq 0 (
     echo [MISSING] Visual Studio - Installing...
-    call :DoInstallVS
+    call :DoInstallVSFresh
 )
 
 :: Check vcpkg
@@ -420,10 +616,10 @@ if exist "!VSWHERE!" (
 :: Method 2: Check common paths
 if "!VS_FOUND!"=="0" (
     for %%p in (
+        "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Community"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Professional"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise"
-        "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools"
         "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools"
     ) do (
         if exist "%%~p\VC\Auxiliary\Build\vcvars64.bat" (
@@ -458,10 +654,10 @@ if exist "!VSWHERE!" (
 :: Fallback to common paths
 if not defined VS_PATH (
     for %%p in (
+        "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Community"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Professional"
         "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise"
-        "%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools"
         "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools"
     ) do (
         if exist "%%~p\VC\Auxiliary\Build\vcvars64.bat" (
@@ -741,31 +937,6 @@ if !errorlevel! equ 0 (
     msiexec /i "%TEMP%\cmake.msi" /quiet /norestart ADD_CMAKE_TO_PATH=System
 )
 set "PATH=%PATH%;C:\Program Files\CMake\bin"
-exit /b 0
-
-:DoInstallVS
-echo [INFO] Installing Visual Studio Build Tools 2022...
-echo [INFO] This is a large download (~2GB) and may take 10-20 minutes...
-
-where winget >nul 2>&1
-if !errorlevel! equ 0 (
-    :: First uninstall any broken installation
-    winget uninstall Microsoft.VisualStudio.2022.BuildTools >nul 2>&1
-    
-    :: Install fresh
-    winget install --id Microsoft.VisualStudio.2022.BuildTools ^
-        --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended" ^
-        --accept-package-agreements --accept-source-agreements
-) else (
-    echo [INFO] Downloading VS Build Tools installer...
-    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vs_buildtools.exe' -OutFile '%TEMP%\vs_buildtools.exe'"
-    "%TEMP%\vs_buildtools.exe" --quiet --wait --norestart ^
-        --add Microsoft.VisualStudio.Workload.VCTools ^
-        --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 ^
-        --add Microsoft.VisualStudio.Component.Windows11SDK.22621 ^
-        --includeRecommended
-)
-echo [OK] Visual Studio Build Tools installed
 exit /b 0
 
 :DoInstallVcpkg
