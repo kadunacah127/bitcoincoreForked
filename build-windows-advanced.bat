@@ -676,15 +676,7 @@ if not exist "%VCPKG_BUILDTREES%" mkdir "%VCPKG_BUILDTREES%" 2>nul
 echo         Generator: %REQUIRED_VS_GENERATOR%
 echo.
 
-cmake -S "%REPO_DIR%" -B "%BUILD_DIR%" -G "%REQUIRED_VS_GENERATOR%" -A x64 ^
-    -DCMAKE_TOOLCHAIN_FILE="%VCPKG_DIR%\scripts\buildsystems\vcpkg.cmake" ^
-    -DVCPKG_TARGET_TRIPLET="x64-windows-static" ^
-    -DVCPKG_INSTALL_OPTIONS="--x-buildtrees-root=%VCPKG_BUILDTREES%;--clean-after-build" ^
-    -DBUILD_GUI=%BUILD_GUI% ^
-    -DBUILD_TESTS=%BUILD_TESTS% ^
-    -DBUILD_BENCH=OFF ^
-    -DWITH_ZMQ=%BUILD_ZMQ% ^
-    -DENABLE_WALLET=%BUILD_WALLET%
+cmake -S "%REPO_DIR%" -B "%BUILD_DIR%" -G "%REQUIRED_VS_GENERATOR%" -A x64 -DCMAKE_TOOLCHAIN_FILE="%VCPKG_DIR%\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static -DVCPKG_INSTALL_OPTIONS="--x-buildtrees-root=%VCPKG_BUILDTREES%" -DBUILD_GUI=%BUILD_GUI% -DBUILD_TESTS=%BUILD_TESTS% -DBUILD_BENCH=OFF -DWITH_ZMQ=%BUILD_ZMQ% -DENABLE_WALLET=%BUILD_WALLET%
 
 if errorlevel 1 (
     echo.
