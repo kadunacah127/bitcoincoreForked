@@ -1,0 +1,312 @@
+================================================================================
+        BITCOIN CORE WINDOWS BUILD USING GOOGLE COLAB
+        Step-by-Step Instructions
+================================================================================
+
+This guide will help you build Bitcoin Core .exe files for Windows using 
+Google Colab's free cloud computing environment.
+
+Advantages:
+- No local setup required
+- Fast, reliable internet (no SSL/proxy issues)
+- Free to use
+- Works even if your local machine has issues
+
+================================================================================
+STEP 1: OPEN GOOGLE COLAB
+================================================================================
+
+1. Go to: https://colab.research.google.com
+
+2. Sign in with your Google account
+
+3. Click "New Notebook" (or File > New Notebook)
+
+4. Rename the notebook to "BitcoinCore_Build" (click on "Untitled" at top)
+
+
+================================================================================
+STEP 2: COPY AND RUN THE BUILD SCRIPT
+================================================================================
+
+Copy the ENTIRE code block below and paste it into a Colab cell, then press 
+Shift+Enter to run it (or click the Play button).
+
+NOTE: The build takes approximately 2-3 hours. Keep the browser tab open.
+
+------------------------ COPY EVERYTHING BELOW THIS LINE -----------------------
+
+# ============================================================================
+# BITCOIN CORE WINDOWS CROSS-COMPILATION ON GOOGLE COLAB
+# ============================================================================
+
+# Cell 1: Install dependencies and clone repository
+# Run time: ~5 minutes
+
+!echo "============================================"
+!echo "STEP 1: Installing build dependencies..."
+!echo "============================================"
+
+!apt-get update
+!apt-get install -y build-essential libtool autotools-dev automake pkg-config \
+    bsdmainutils curl git cmake ninja-build python3 \
+    g++-mingw-w64-x86-64-posix nsis
+
+# Set MinGW as default
+!update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+!update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+
+!echo ""
+!echo "============================================"
+!echo "STEP 2: Cloning Bitcoin Core repository..."
+!echo "============================================"
+
+%cd /content
+!rm -rf bitcoin
+!git clone https://github.com/kadunacah127/BitcoinCoreCloned.git bitcoin
+%cd bitcoin
+!git checkout master
+
+!echo ""
+!echo "Repository cloned successfully!"
+!echo "Current directory:"
+!pwd
+!ls -la
+
+------------------------ END OF CELL 1 -----------------------------------------
+
+
+------------------------ COPY INTO NEW CELL (Cell 2) ---------------------------
+
+# Cell 2: Build dependencies using the depends system
+# Run time: ~60-90 minutes
+
+!echo "============================================"
+!echo "STEP 3: Building dependencies for Windows..."
+!echo "This will take 60-90 minutes. Please wait..."
+!echo "============================================"
+
+%cd /content/bitcoin/depends
+
+# Build dependencies for Windows 64-bit (without GUI for faster build)
+!make HOST=x86_64-w64-mingw32 NO_QT=1 NO_QR=1 NO_ZMQ=1 NO_USDT=1 -j$(nproc)
+
+!echo ""
+!echo "Dependencies built successfully!"
+
+------------------------ END OF CELL 2 -----------------------------------------
+
+
+------------------------ COPY INTO NEW CELL (Cell 3) ---------------------------
+
+# Cell 3: Configure Bitcoin Core for Windows
+# Run time: ~5 minutes
+
+!echo "============================================"
+!echo "STEP 4: Configuring Bitcoin Core..."
+!echo "============================================"
+
+%cd /content/bitcoin
+
+# Configure with CMake using the cross-compilation toolchain
+!cmake -B build --toolchain depends/x86_64-w64-mingw32/toolchain.cmake \
+    -DBUILD_GUI=OFF \
+    -DBUILD_TESTS=OFF \
+    -DBUILD_BENCH=OFF \
+    -DWITH_ZMQ=OFF \
+    -DENABLE_WALLET=ON
+
+!echo ""
+!echo "Configuration complete!"
+
+------------------------ END OF CELL 3 -----------------------------------------
+
+
+------------------------ COPY INTO NEW CELL (Cell 4) ---------------------------
+
+# Cell 4: Build Bitcoin Core
+# Run time: ~30-45 minutes
+
+!echo "============================================"
+!echo "STEP 5: Building Bitcoin Core..."
+!echo "This will take 30-45 minutes. Please wait..."
+!echo "============================================"
+
+%cd /content/bitcoin
+
+!cmake --build build -j$(nproc)
+
+!echo ""
+!echo "============================================"
+!echo "BUILD COMPLETE!"
+!echo "============================================"
+
+# List the built executables
+!echo ""
+!echo "Built executables:"
+!find build -name "*.exe" -type f 2>/dev/null | head -20
+
+------------------------ END OF CELL 4 -----------------------------------------
+
+
+------------------------ COPY INTO NEW CELL (Cell 5) ---------------------------
+
+# Cell 5: Package and download the executables
+# Run time: ~1 minute
+
+!echo "============================================"
+!echo "STEP 6: Packaging executables for download..."
+!echo "============================================"
+
+%cd /content/bitcoin
+
+# Create output directory
+!mkdir -p /content/bitcoin_windows_build
+
+# Copy all .exe files
+!find build -name "*.exe" -type f -exec cp {} /content/bitcoin_windows_build/ \;
+
+# List what was copied
+!echo ""
+!echo "Files ready for download:"
+!ls -la /content/bitcoin_windows_build/
+
+# Create a zip file
+!cd /content && zip -r bitcoin_core_windows.zip bitcoin_windows_build/
+
+!echo ""
+!echo "============================================"
+!echo "DOWNLOAD READY!"
+!echo "============================================"
+!echo ""
+!echo "Zip file size:"
+!ls -lh /content/bitcoin_core_windows.zip
+
+# Download link (for Colab)
+from google.colab import files
+files.download('/content/bitcoin_core_windows.zip')
+
+------------------------ END OF CELL 5 -----------------------------------------
+
+
+================================================================================
+STEP 3: WAIT FOR THE BUILD
+================================================================================
+
+1. The build process has 5 cells to run in sequence
+2. Total time: approximately 2-3 hours
+3. Keep the browser tab open and active
+4. Colab may disconnect after 90 minutes of inactivity - just reconnect and 
+   continue from where it stopped
+
+Progress breakdown:
+- Cell 1 (Dependencies install + Clone): ~5 minutes
+- Cell 2 (Build depends): ~60-90 minutes  
+- Cell 3 (Configure): ~5 minutes
+- Cell 4 (Build): ~30-45 minutes
+- Cell 5 (Package): ~1 minute
+
+
+================================================================================
+STEP 4: DOWNLOAD YOUR EXECUTABLES
+================================================================================
+
+1. After Cell 5 completes, a download dialog will appear automatically
+
+2. Save "bitcoin_core_windows.zip" to your computer
+
+3. Extract the zip file
+
+4. You will have these Windows executables:
+   - bitcoind.exe (Full node daemon)
+   - bitcoin-cli.exe (Command-line interface)
+   - bitcoin-tx.exe (Transaction utility)
+   - bitcoin-wallet.exe (Wallet tool)
+   - bitcoin-util.exe (Utility tool)
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+ISSUE: "Runtime disconnected"
+FIX: Click "Reconnect" and run the cell that was interrupted again
+
+ISSUE: "Out of memory" 
+FIX: Runtime > Factory reset runtime, then start from Cell 1
+
+ISSUE: Build fails at depends
+FIX: Re-run Cell 2 - sometimes network glitches cause failures
+
+ISSUE: Download doesn't start
+FIX: In Colab, go to the Files panel (folder icon on left), 
+     navigate to bitcoin_core_windows.zip, right-click, Download
+
+
+================================================================================
+ALTERNATIVE: SINGLE CELL VERSION (All-in-One)
+================================================================================
+
+If you prefer to run everything in one cell, use this combined script:
+
+------------------------ COPY INTO A SINGLE CELL -------------------------------
+
+# Bitcoin Core Windows Build - All in One
+# Total time: ~2-3 hours
+
+# Install dependencies
+!apt-get update && apt-get install -y build-essential libtool autotools-dev \
+    automake pkg-config bsdmainutils curl git cmake g++-mingw-w64-x86-64-posix
+
+!update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+
+# Clone repo
+%cd /content
+!rm -rf bitcoin
+!git clone https://github.com/kadunacah127/BitcoinCoreCloned.git bitcoin
+%cd bitcoin
+!git checkout master
+
+# Build depends
+%cd /content/bitcoin/depends
+!make HOST=x86_64-w64-mingw32 NO_QT=1 NO_QR=1 NO_ZMQ=1 NO_USDT=1 -j$(nproc)
+
+# Configure and build
+%cd /content/bitcoin
+!cmake -B build --toolchain depends/x86_64-w64-mingw32/toolchain.cmake \
+    -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF \
+    -DWITH_ZMQ=OFF -DENABLE_WALLET=ON
+!cmake --build build -j$(nproc)
+
+# Package
+!mkdir -p /content/bitcoin_windows_build
+!find build -name "*.exe" -exec cp {} /content/bitcoin_windows_build/ \;
+!cd /content && zip -r bitcoin_core_windows.zip bitcoin_windows_build/
+
+# Download
+from google.colab import files
+files.download('/content/bitcoin_core_windows.zip')
+
+------------------------ END OF SINGLE CELL ------------------------------------
+
+
+================================================================================
+NOTES
+================================================================================
+
+1. This builds WITHOUT the GUI (bitcoin-qt.exe) because Qt cross-compilation
+   takes much longer. If you need the GUI, remove "NO_QT=1" from Cell 2.
+
+2. The executables are cross-compiled from Linux to Windows using MinGW.
+   They will run natively on Windows 10/11 64-bit.
+
+3. Google Colab free tier has usage limits. If you get disconnected,
+   you can use Colab Pro or try again after a few hours.
+
+4. The built executables are unsigned. Windows may show a warning when
+   you first run them - click "More info" > "Run anyway".
+
+
+================================================================================
+                              END OF GUIDE
+================================================================================
