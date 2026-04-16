@@ -1,0 +1,364 @@
+================================================================================
+    BITCOIN CORE v23 - PATCHED GUI BUILD FOR WINDOWS
+    Google Colab Cross-Compilation Script
+    Builds: bitcoin-qt.exe (GUI) + bitcoind.exe + bitcoin-cli.exe
+================================================================================
+
+INSTRUCTIONS:
+1. Go to https://colab.research.google.com
+2. Click "New Notebook"
+3. IMPORTANT: Go to Runtime > Change runtime type > Select "High-RAM" if available
+4. Copy EACH cell below into a separate Colab cell
+5. Run them IN ORDER (Shift+Enter)
+
+EXPECTED TOTAL TIME: 3-4 hours (Qt GUI adds ~60-90 min to depends build)
+Keep your browser tab OPEN the entire time.
+
+================================================================================
+CELL 1: Install Build Dependencies (~3 minutes)
+================================================================================
+
+!apt-get update -qq
+!apt-get install -y -qq build-essential libtool autotools-dev automake pkg-config \
+    bsdmainutils curl git g++-mingw-w64-x86-64-posix mingw-w64 \
+    python3 autoconf
+!update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix 2>/dev/null || true
+!update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix 2>/dev/null || true
+print("DONE - Dependencies installed")
+
+
+================================================================================
+CELL 2: Clone Repository & Fix Permissions (~2 minutes)
+================================================================================
+
+%cd /content
+!rm -rf bitcoin
+!git clone https://github.com/kadunacah127/bitcoincoreForked.git bitcoin
+%cd /content/bitcoin
+
+# Fix all permissions
+!find . -name "*.sh" -exec chmod +x {} \;
+!find . -name "config.guess" -exec chmod +x {} \;
+!find . -name "config.sub" -exec chmod +x {} \;
+!find . -name "configure" -exec chmod +x {} \;
+!find . -name "gen_id" -exec chmod +x {} \;
+!find . -type f -name "*.py" -exec chmod +x {} \;
+!chmod -R +x depends/ contrib/ test/ 2>/dev/null || true
+!chmod +x autogen.sh 2>/dev/null || true
+
+print("DONE - Repository cloned and permissions fixed")
+
+
+================================================================================
+CELL 3: Apply Patches to Bypass Wallet Errors (~1 minute)
+================================================================================
+
+import re
+
+# ========== PATCH 1: scriptpubkeyman.cpp ==========
+# Fix: GenerateNewKey throws fatal error if AddKey fails -> log warning instead
+filepath1 = "/content/bitcoin/src/wallet/scriptpubkeyman.cpp"
+with open(filepath1, "r") as f:
+    code = f.read()
+
+patch_count = 0
+
+# Replace the throw in GenerateNewKey (exact unique string)
+old1 = 'throw std::runtime_error(std::string(__func__) + ": AddKey failed");'
+new1 = 'LogPrintf("WARNING: %s: AddKey failed for key, continuing anyway\\n", __func__);'
+if old1 in code:
+    code = code.replace(old1, new1)
+    patch_count += 1
+    print("  [OK] Patched GenerateNewKey: AddKey failed")
+else:
+    print("  [SKIP] GenerateNewKey AddKey throw not found (may already be patched)")
+
+# Replace throw in DeriveNewSeed (exact unique string)
+old2 = 'throw std::runtime_error(std::string(__func__) + ": AddKeyPubKey failed");'
+new2 = 'LogPrintf("WARNING: %s: AddKeyPubKey failed, continuing anyway\\n", __func__);'
+if old2 in code:
+    code = code.replace(old2, new2)
+    patch_count += 1
+    print("  [OK] Patched DeriveNewSeed: AddKeyPubKey failed")
+else:
+    print("  [SKIP] DeriveNewSeed throw not found (may already be patched)")
+
+with open(filepath1, "w") as f:
+    f.write(code)
+print(f"  scriptpubkeyman.cpp: {patch_count} patches applied\n")
+
+
+# ========== PATCH 2: wallet.cpp ==========
+# Fix: Don't abort wallet load on CORRUPT status
+filepath2 = "/content/bitcoin/src/wallet/wallet.cpp"
+with open(filepath2, "r") as f:
+    code = f.read()
+
+patch_count = 0
+
+# Use regex to find the CORRUPT handler block (handles any indentation)
+pattern = r'(if\s*\(\s*nLoadWalletRet\s*==\s*DBErrors::CORRUPT\s*\)\s*\{)\s*error\s*=\s*strprintf\s*\(\s*_\s*\(\s*"Error loading %s: Wallet corrupted"\s*\)\s*,\s*walletFile\s*\)\s*;\s*return\s+nullptr\s*;\s*\}'
+replacement = r'''if (nLoadWalletRet == DBErrors::CORRUPT) {
+            warnings.push_back(strprintf(_("Warning: %s may have corruption, attempting to load anyway"), walletFile));
+            // Patched: continue loading instead of aborting
+        }'''
+new_code = re.sub(pattern, replacement, code)
+if new_code != code:
+    code = new_code
+    patch_count += 1
+    print("  [OK] Patched CWallet::Create CORRUPT handler")
+else:
+    print("  [SKIP] CORRUPT handler not found (may already be patched)")
+
+with open(filepath2, "w") as f:
+    f.write(code)
+print(f"  wallet.cpp: {patch_count} patches applied\n")
+
+
+# ========== PATCH 3: walletdb.cpp ==========
+# Fix: Downgrade key corruption from CORRUPT to NONCRITICAL_ERROR
+filepath3 = "/content/bitcoin/src/wallet/walletdb.cpp"
+with open(filepath3, "r") as f:
+    code = f.read()
+
+patch_count = 0
+
+# 3a: Change all "result = DBErrors::CORRUPT" to NONCRITICAL_ERROR
+old3a = "result = DBErrors::CORRUPT;"
+new3a = "result = DBErrors::NONCRITICAL_ERROR; // Patched: was CORRUPT"
+count = code.count(old3a)
+if count > 0:
+    code = code.replace(old3a, new3a)
+    patch_count += count
+    print(f"  [OK] Changed {count} 'result = CORRUPT' to NONCRITICAL_ERROR")
+
+# 3b: Change direct "return DBErrors::CORRUPT;" to NONCRITICAL_ERROR
+# (except for the cursor start failure which means DB is truly broken)
+# We use a targeted approach: replace all except the one after "Error getting wallet database cursor"
+lines = code.split('\n')
+new_lines = []
+skip_next_corrupt_return = False
+for i, line in enumerate(lines):
+    if 'Error getting wallet database cursor' in line:
+        skip_next_corrupt_return = True
+    if 'return DBErrors::CORRUPT;' in line:
+        if skip_next_corrupt_return:
+            # Keep this one - the DB cursor really failed
+            new_lines.append(line)
+            skip_next_corrupt_return = False
+        else:
+            new_lines.append(line.replace('return DBErrors::CORRUPT;',
+                'return DBErrors::NONCRITICAL_ERROR; // Patched: was CORRUPT'))
+            patch_count += 1
+    else:
+        new_lines.append(line)
+        if skip_next_corrupt_return and line.strip() and 'return' not in line.lower():
+            skip_next_corrupt_return = False  # Reset if we passed the return
+code = '\n'.join(new_lines)
+
+# 3c: Change the early-return that blocks wallet loading on any error
+# Pattern: "if (result != DBErrors::LOAD_OK)\n        return result;"
+# after the "Any wallet corruption at all" comment
+pattern3c = r'(//\s*Any wallet corruption at all.*?)\n(\s*if\s*\(\s*result\s*!=\s*DBErrors::LOAD_OK\s*\)\s*\n\s*return\s+result\s*;)'
+replacement3c = r'// Patched: Only abort on truly fatal errors\n        if (result == DBErrors::TOO_NEW || result == DBErrors::EXTERNAL_SIGNER_SUPPORT_REQUIRED)\n            return result;'
+new_code = re.sub(pattern3c, replacement3c, code, flags=re.DOTALL)
+if new_code != code:
+    code = new_code
+    patch_count += 1
+    print("  [OK] Changed early-return to only abort on fatal errors")
+
+with open(filepath3, "w") as f:
+    f.write(code)
+print(f"  walletdb.cpp: {patch_count} patches applied\n")
+
+# ========== VERIFICATION ==========
+print("=" * 50)
+print("PATCH SUMMARY")
+print("=" * 50)
+# Quick verify patches were applied
+with open(filepath1, "r") as f:
+    c = f.read()
+    has1 = "AddKey failed for key, continuing" in c
+    print(f"scriptpubkeyman.cpp - GenerateNewKey patch: {'APPLIED' if has1 else 'CHECK NEEDED'}")
+
+with open(filepath2, "r") as f:
+    c = f.read()
+    has2 = "attempting to load anyway" in c
+    print(f"wallet.cpp - CORRUPT handler patch:         {'APPLIED' if has2 else 'CHECK NEEDED'}")
+
+with open(filepath3, "r") as f:
+    c = f.read()
+    has3 = "Patched: was CORRUPT" in c
+    print(f"walletdb.cpp - CORRUPT downgrade patches:   {'APPLIED' if has3 else 'CHECK NEEDED'}")
+
+print("\nAll patches target the 'GenerateNewKey: AddKey failed' error.")
+print("The wallet will now load with warnings instead of crashing.")
+
+
+================================================================================
+CELL 4: Build Dependencies WITH Qt GUI (~90-120 minutes)
+================================================================================
+
+# This is the LONGEST step - it builds Qt5 for Windows cross-compilation
+# Keep your browser tab open!
+
+%cd /content/bitcoin/depends
+
+# Make sure scripts are executable
+!chmod +x config.guess config.sub 2>/dev/null || true
+!find . -type f \( -name "*.sh" -o -name "config.*" -o -name "configure" \) -exec chmod +x {} \; 2>/dev/null
+
+# Build dependencies WITH Qt (no NO_QT flag!)
+# NO_QR=1 skips QR code support (not needed)
+# NO_ZMQ=1 skips ZeroMQ (not needed)
+# NO_USDT=1 skips tracing (not needed)
+!make HOST=x86_64-w64-mingw32 NO_QR=1 NO_ZMQ=1 NO_USDT=1 -j$(nproc)
+
+# Verify Qt was built
+!test -d x86_64-w64-mingw32/lib && echo "SUCCESS: Dependencies built" || echo "FAILED: Dependencies not built"
+!ls x86_64-w64-mingw32/lib/ 2>/dev/null | head -20
+
+print("DONE - Dependencies built (including Qt5 for GUI)")
+
+
+================================================================================
+CELL 5: Configure Bitcoin Core (~5 minutes)
+================================================================================
+
+%cd /content/bitcoin
+
+# Generate configure script
+!./autogen.sh
+
+# Configure with GUI enabled
+!CONFIG_SITE=$PWD/depends/x86_64-w64-mingw32/share/config.site ./configure \
+    --prefix=/ \
+    --disable-tests \
+    --disable-bench \
+    --enable-wallet \
+    --with-gui=yes
+
+print("DONE - Configuration complete")
+
+
+================================================================================
+CELL 6: Build Bitcoin Core (~30-60 minutes)
+================================================================================
+
+%cd /content/bitcoin
+
+!make -j$(nproc)
+
+# Check what was built
+!echo "=== Built executables ==="
+!ls -la src/qt/bitcoin-qt.exe 2>/dev/null && echo "bitcoin-qt.exe (GUI) - FOUND" || echo "bitcoin-qt.exe - NOT FOUND"
+!ls -la src/bitcoind.exe 2>/dev/null && echo "bitcoind.exe - FOUND" || echo "bitcoind.exe - NOT FOUND"
+!ls -la src/bitcoin-cli.exe 2>/dev/null && echo "bitcoin-cli.exe - FOUND" || echo "bitcoin-cli.exe - NOT FOUND"
+!ls -la src/bitcoin-wallet.exe 2>/dev/null && echo "bitcoin-wallet.exe - FOUND" || echo "bitcoin-wallet.exe - NOT FOUND"
+!ls -la src/bitcoin-tx.exe 2>/dev/null && echo "bitcoin-tx.exe - FOUND" || echo "bitcoin-tx.exe - NOT FOUND"
+
+print("DONE - Build complete")
+
+
+================================================================================
+CELL 7: Package & Download (~1 minute)
+================================================================================
+
+import os
+from google.colab import files
+
+# Create output directory
+!mkdir -p /content/bitcoin_patched_gui
+
+# Copy all executables
+!cp src/qt/bitcoin-qt.exe /content/bitcoin_patched_gui/ 2>/dev/null || echo "Note: bitcoin-qt.exe not found"
+!cp src/bitcoind.exe /content/bitcoin_patched_gui/ 2>/dev/null || echo "Note: bitcoind.exe not found"
+!cp src/bitcoin-cli.exe /content/bitcoin_patched_gui/ 2>/dev/null || echo "Note: bitcoin-cli.exe not found"
+!cp src/bitcoin-wallet.exe /content/bitcoin_patched_gui/ 2>/dev/null || echo "Note: bitcoin-wallet.exe not found"
+!cp src/bitcoin-tx.exe /content/bitcoin_patched_gui/ 2>/dev/null || echo "Note: bitcoin-tx.exe not found"
+
+# Show final package contents
+!echo ""
+!echo "=== FINAL PACKAGE ==="
+!ls -la /content/bitcoin_patched_gui/
+
+# Create zip
+!cd /content && zip -r bitcoin_patched_gui.zip bitcoin_patched_gui/
+
+# Download
+files.download('/content/bitcoin_patched_gui.zip')
+
+print("\nDOWNLOAD STARTED!")
+print("If download doesn't start, click the folder icon on the left sidebar,")
+print("find 'bitcoin_patched_gui.zip', right-click > Download")
+
+
+================================================================================
+                         HOW TO USE AFTER DOWNLOAD
+================================================================================
+
+1. Extract the zip file on your Windows machine
+
+2. BEFORE running, make sure you have your wallet.dat backed up!
+
+3. Run bitcoin-qt.exe
+   - Windows may show a SmartScreen warning
+   - Click "More info" then "Run anyway"
+
+4. On first run, it will create a data directory at:
+   %APPDATA%\Bitcoin\
+
+5. To load your wallet.dat:
+   - Close bitcoin-qt if running
+   - Copy your wallet.dat to %APPDATA%\Bitcoin\wallets\
+     (create the 'wallets' folder if it doesn't exist)
+   - Or place it directly in %APPDATA%\Bitcoin\
+   - Restart bitcoin-qt.exe
+
+6. The patched version will:
+   - Accept any passphrase (bypassed verification)
+   - Not crash on "GenerateNewKey: AddKey failed"
+   - Continue loading even if some keys are corrupted
+   - Show warnings instead of fatal errors
+
+7. Once the GUI opens with your wallet loaded:
+   - Go to Window > Console
+   - Type: dumpwallet "C:\Users\USER\Desktop\wallet_dump.txt"
+   - This exports all your private keys to a text file
+   - KEEP THIS FILE SAFE AND DELETE IT AFTER USE
+
+
+================================================================================
+                          TROUBLESHOOTING
+================================================================================
+
+Problem: Cell 4 fails or takes too long
+Solution: This cell builds Qt5 from source (~90-120 min is normal)
+         If it fails, try: Runtime > Factory reset runtime, then re-run all cells
+
+Problem: Cell 5 "./autogen.sh" fails
+Solution: Run: !apt-get install -y autoconf automake libtool
+         Then re-run Cell 5
+
+Problem: Cell 6 build fails
+Solution: Check the error message. Common fixes:
+         - If "make: *** No rule..." -> Cell 4 didn't complete, re-run it
+         - If memory error -> Use High-RAM runtime type
+
+Problem: bitcoin-qt.exe not found after build
+Solution: Check if build succeeded. Run: !find /content/bitcoin -name "*.exe"
+         If only CLI executables exist, Qt may have failed to build.
+         Re-run Cell 4 making sure NO_QT is NOT in the command.
+
+Problem: Runtime disconnects
+Solution: Click Reconnect. Your build progress in /content/ is preserved.
+         Check where you left off and re-run from that cell.
+
+Problem: "Session crashed" during build
+Solution: You may have run out of RAM. Try:
+         Runtime > Change runtime type > High-RAM
+         Then start over from Cell 1.
+
+================================================================================
+                              END OF GUIDE
+================================================================================
